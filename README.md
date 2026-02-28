@@ -1,19 +1,18 @@
 # 🛒 Shupping Helper – Smart Price Comparison Tool
 
-**Phase 1** — Tokopedia product scraper with structured terminal output.
+Multi-source product scraper supporting **Tokopedia** and **Seek Indonesia** (Shopify).
 
 ---
 
 ## Features
 
-- 🔍 Search products on Tokopedia by keyword
+- 🔍 Search products on **Tokopedia** and **Seek Indonesia** by keyword
 - 💰 Prices converted to clean numeric integers (IDR)
 - ⭐ Ratings, store names, and direct product URLs
+- 🏷️ Sale price detection with original price comparison (Seek Indonesia)
+- 📦 Sizes, colours, stock status for Seek Indonesia products
 - 🛡️ Anti-bot handling: rotating User-Agent, random delays, retries
-- 📦 Three scraping strategies with automatic fallback:
-  1. **GraphQL API** – fast & structured (primary)
-  2. **Static HTML** – requests + BeautifulSoup (secondary)
-  3. **Playwright** – headless Chromium browser (ultimate fallback)
+- 📦 Multiple scraping strategies with automatic fallback per source
 - 📁 Optional CSV export
 
 ## Requirements
@@ -46,22 +45,30 @@ python -m playwright install chromium
 
 ## Usage
 
-### Basic search
+### Basic search (Tokopedia, default)
 
 ```bash
 python main.py "adidas samba"
+```
+
+### Search Seek Indonesia
+
+```bash
+python main.py "adidas samba" --source seek
 ```
 
 ### Multi-page search
 
 ```bash
 python main.py "adidas samba" --pages 3
+python main.py "adidas samba" --source seek --pages 2
 ```
 
 ### Export results to CSV
 
 ```bash
 python main.py "adidas samba" --export results.csv
+python main.py "adidas samba" --source seek --export seek_results.csv
 ```
 
 ### Verbose logging
@@ -100,8 +107,9 @@ python main.py "adidas samba" --verbose
 shupping-helper/
 ├── scraper/
 │   ├── __init__.py
-│   └── tokopedia.py      # Tokopedia scraper (GQL, HTML, Playwright)
-├── main.py                # CLI entry point
+│   ├── tokopedia.py      # Tokopedia scraper (GQL, HTML, Playwright)
+│   └── seek.py           # Seek Indonesia scraper (Shopify JSON API, Playwright)
+├── main.py                # CLI entry point (multi-source)
 ├── requirements.txt       # Python dependencies
 ├── README.md
 └── LICENSE
@@ -111,8 +119,9 @@ shupping-helper/
 
 | Layer | File | Responsibility |
 |-------|------|----------------|
-| CLI | `main.py` | Argument parsing, formatted output, CSV export trigger |
-| Scraper | `scraper/tokopedia.py` | URL building, HTTP requests, HTML/GQL parsing, data normalisation |
+| CLI | `main.py` | Argument parsing, source routing, formatted output, CSV export |
+| Scraper | `scraper/tokopedia.py` | Tokopedia: GQL API, HTML scraping, Playwright fallback |
+| Scraper | `scraper/seek.py` | Seek Indonesia: Shopify Search API, Products JSON, Playwright fallback |
 
 ## Edge Cases Handled
 

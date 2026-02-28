@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Smart Price Comparison Tool – Phase 1: Tokopedia Scraper
-=========================================================
+Smart Price Comparison Tool – Multi-Source Scraper
+===================================================
 
 Usage
 -----
     python main.py "adidas samba"
+    python main.py "adidas samba" --source seek
+    python main.py "adidas samba" --source odd
+    python main.py "adidas samba" --source all
     python main.py "adidas samba" --pages 2
     python main.py "adidas samba" --pages 2 --export results.csv
     python main.py "adidas samba" --verbose
@@ -19,7 +22,16 @@ import logging
 import sys
 import textwrap
 
-from scraper.tokopedia import export_to_csv, search_tokopedia
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+# Importing the package registers all scrapers.
+import scraper  # noqa: F401
+from scraper.registry import get_scraper, list_sources, list_scrapers
+
+console = Console()
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -27,55 +39,216 @@ from scraper.tokopedia import export_to_csv, search_tokopedia
 
 
 def _format_price(price: int) -> str:
-    """Format an integer price into Indonesian Rupiah notation.
-
-    >>> _format_price(1450000)
-    'Rp 1.450.000'
-    """
+    """Format an integer price into Indonesian Rupiah notation."""
     if not price:
         return "N/A"
     formatted = f"{price:,}".replace(",", ".")
     return f"Rp {formatted}"
 
 
-def _truncate(text: str, width: int = 80) -> str:
+def _truncate(text: str, width: int = 50) -> str:
     """Truncate a string to *width* characters, adding '…' if needed."""
     if len(text) <= width:
         return text
     return text[: width - 1] + "…"
 
 
-def print_results(keyword: str, products: list[dict]) -> None:
-    """Pretty-print the product list to the terminal."""
+def _make_price_text(product: dict, cheapest: int) -> Text:
+    """Build a Rich Text object for the price with color coding."""
+    price = product["price"]
+    text = Text()
 
-    separator = "─" * 60
+    # Color code: green for cheapest, yellow for mid, white for normal.
+    if price == cheapest and cheapest > 0:
+        text.append(_format_price(price), style="bold green")
+        text.append(" 🏆", style="bold")
+    else:
+        text.append(_format_price(price), style="bold white")
 
-    print(f"\n{'═' * 60}")
-    print(f"  🔍  Searching: {keyword}")
-    print(f"{'═' * 60}\n")
+    # Sale badge.
+    if product.get("is_on_sale") and product.get("original_price"):
+        orig = product["original_price"]
+        discount = round((1 - price / orig) * 100) if orig > 0 else 0
+        text.append(f"  was {_format_price(orig)}", style="dim")
+        text.append(f"  -{discount}%", style="bold red")
+
+    return text
+
+
+def _make_source_text(product: dict) -> Text:
+    """Color-code the source label."""
+    source = product.get("_source") or product.get("store", "")
+    text = Text()
+    if "Seek" in source:
+        text.append(source, style="cyan")
+    elif "Daily Dose" in source or "ODD" in source.upper():
+        text.append(source, style="magenta")
+    else:
+        text.append(source, style="yellow")
+    return text
+
+
+def print_results(
+    keyword: str,
+    products: list[dict],
+    source_label: str = "Our Daily Dose",
+) -> None:
+    """Pretty-print the product list using Rich tables."""
+
+    # ---- Header ----
+    console.print()
+    console.print(
+        Panel(
+            f"[bold white]🔍 Searching:[/] [cyan]{keyword}[/]  •  "
+            f"[bold]{source_label}[/]  •  "
+            f"[green]{len(products)} products found[/]",
+            border_style="blue",
+            padding=(0, 2),
+        )
+    )
 
     if not products:
-        print("  ⚠  No results found. Tokopedia may be blocking requests.")
-        print("     Try again later or install Playwright for browser-based scraping:")
-        print("       pip install playwright && python -m playwright install chromium\n")
+        console.print(
+            Panel(
+                "[yellow]⚠ No results found.[/]\n"
+                "Try again later or install Playwright:\n"
+                "[dim]pip install playwright && python -m playwright install chromium[/dim]",
+                border_style="yellow",
+            )
+        )
         return
 
-    print(f"  Tokopedia Results ({len(products)} products):\n")
+    # ---- Find cheapest for highlighting ----
+    prices = [p["price"] for p in products if p["price"] > 0]
+    cheapest = min(prices) if prices else 0
+
+    # ---- Product table ----
+    table = Table(
+        show_header=True,
+        header_style="bold bright_white on #1a1a2e",
+        border_style="bright_black",
+        row_styles=["", "on #0d0d1a"],
+        pad_edge=True,
+        expand=True,
+    )
+
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Product", min_width=30, max_width=50)
+    table.add_column("Price", min_width=18, justify="right")
+    table.add_column("Source", min_width=16)
+    table.add_column("Brand", min_width=10)
+    table.add_column("Status", min_width=8, justify="center")
 
     for idx, product in enumerate(products, start=1):
-        ad_tag = " [AD]" if product.get("is_ad") else ""
-        rating_str = f"{product['rating']:.1f}" if product["rating"] else "N/A"
-        sold_str = f"  |  Sold: {product['sold']}" if product.get("sold") else ""
-        review_str = f"  |  Reviews: {product['reviews']}" if product.get("reviews") else ""
+        # Name with optional ad tag.
+        name = _truncate(product["name"], 48)
+        name_text = Text(name)
+        if product.get("is_ad"):
+            name_text.append(" [AD]", style="bold red")
 
-        print(f"  {idx}. {_truncate(product['name'])}{ad_tag}")
-        print(f"     Price  : {_format_price(product['price'])}")
-        print(f"     Store  : {product['store']}")
-        print(f"     Rating : ⭐ {rating_str}{sold_str}{review_str}")
-        print(f"     Link   : {_truncate(product['url'], 100)}")
-        print(f"     {separator}")
+        # Price with color coding.
+        price_text = _make_price_text(product, cheapest)
 
-    print()
+        # Source.
+        source_text = _make_source_text(product)
+
+        # Brand.
+        brand = product.get("brand", "N/A")
+
+        # Status.
+        if "in_stock" in product:
+            status = Text("✅" if product["in_stock"] else "❌")
+        elif product.get("rating"):
+            status = Text(f"⭐ {product['rating']:.1f}")
+        else:
+            status = Text("—", style="dim")
+
+        table.add_row(
+            str(idx), name_text, price_text, source_text, brand, status
+        )
+
+    console.print(table)
+
+    # ---- Sizes column (show separately if any products have sizes) ----
+    products_with_sizes = [p for p in products if p.get("sizes")]
+    if products_with_sizes:
+        console.print()
+        sizes_table = Table(
+            title="📏 Available Sizes",
+            title_style="bold",
+            border_style="bright_black",
+            expand=True,
+        )
+        sizes_table.add_column("Product", min_width=30)
+        sizes_table.add_column("Sizes", min_width=40)
+        for p in products_with_sizes:
+            sizes = p["sizes"]
+            if isinstance(sizes, list):
+                sizes = ", ".join(sizes)
+            sizes_table.add_row(
+                _truncate(p["name"], 40),
+                sizes,
+            )
+        console.print(sizes_table)
+
+    # ---- Price summary panel ----
+    if len(prices) >= 2:
+        avg_price = sum(prices) // len(prices)
+        max_price = max(prices)
+
+        # Find best deal (product with biggest discount).
+        sale_products = [
+            p for p in products
+            if p.get("is_on_sale") and p.get("original_price", 0) > 0
+        ]
+        best_deal = None
+        if sale_products:
+            best_deal = max(
+                sale_products,
+                key=lambda p: (p["original_price"] - p["price"]) / p["original_price"]
+            )
+
+        # Build summary text.
+        summary = Text()
+        summary.append("📉 Cheapest    ", style="dim")
+        summary.append(f"{_format_price(cheapest)}", style="bold green")
+        cheapest_product = next(p for p in products if p["price"] == cheapest)
+        summary.append(
+            f"  ({cheapest_product.get('_source') or cheapest_product.get('store', '')})\n",
+            style="dim",
+        )
+        summary.append("📈 Most Expensive  ", style="dim")
+        summary.append(f"{_format_price(max_price)}\n", style="bold red")
+        summary.append("📊 Average     ", style="dim")
+        summary.append(f"{_format_price(avg_price)}\n", style="bold")
+
+        if best_deal:
+            discount = round(
+                (1 - best_deal["price"] / best_deal["original_price"]) * 100
+            )
+            summary.append("🏷️ Best Deal   ", style="dim")
+            summary.append(
+                f"{best_deal['name'][:40]} — {_format_price(best_deal['price'])} ",
+                style="bold yellow",
+            )
+            summary.append(f"(-{discount}%)", style="bold red")
+
+        on_sale = len(sale_products)
+        if on_sale:
+            summary.append(f"\n🔥 On Sale     ", style="dim")
+            summary.append(f"{on_sale} of {len(products)} products", style="bold")
+
+        console.print()
+        console.print(
+            Panel(
+                summary,
+                title="[bold]💰 Price Comparison Summary[/]",
+                border_style="green",
+                padding=(1, 2),
+            )
+        )
+
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +258,13 @@ def print_results(keyword: str, products: list[dict]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     """Create and return the argument parser."""
+    sources = list_sources()
+
     parser = argparse.ArgumentParser(
         prog="shupping-helper",
         description=textwrap.dedent("""\
-            Smart Price Comparison Tool – Phase 1
-            Scrape product data from Tokopedia and display structured results.
+            Smart Price Comparison Tool
+            Scrape product data from multiple sources and display structured results.
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -97,6 +272,13 @@ def build_parser() -> argparse.ArgumentParser:
         "keyword",
         type=str,
         help='Product search keyword, e.g. "adidas samba"',
+    )
+    parser.add_argument(
+        "--source", "-s",
+        type=str,
+        choices=sources + ["all"],
+        default="odd",
+        help='Data source to scrape (default: odd). Use "all" for combined search.',
     )
     parser.add_argument(
         "--pages",
@@ -119,13 +301,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _search_all(keyword: str, max_pages: int) -> list[dict]:
+    """Search all registered sources and return combined, price-sorted results."""
+    all_products: list[dict] = []
+    scrapers = list_scrapers()
+
+    for slug, scraper_cls in scrapers.items():
+        scraper_inst = scraper_cls()
+        console.print(f"  [dim]━━━ Searching[/] [bold]{scraper_inst.NAME}[/] [dim]…[/]")
+        try:
+            products = scraper_inst.search(keyword, max_pages=max_pages)
+            for p in products:
+                p["_source"] = scraper_inst.NAME
+            all_products.extend(products)
+            console.print(
+                f"  [dim]━━━[/] [bold]{scraper_inst.NAME}[/] → "
+                f"[green]{len(products)} product(s)[/]"
+            )
+        except Exception as exc:
+            console.print(
+                f"  [dim]━━━[/] [bold]{scraper_inst.NAME}[/] → "
+                f"[red]failed: {exc}[/]"
+            )
+
+    # Sort by price (cheapest first), zero-price items last.
+    all_products.sort(key=lambda p: p["price"] if p["price"] > 0 else float("inf"))
+
+    return all_products
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the CLI."""
     parser = build_parser()
     args = parser.parse_args(argv)
 
     # Configure logging.
-    log_level = logging.DEBUG if args.verbose else logging.INFO
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
@@ -136,24 +347,42 @@ def main(argv: list[str] | None = None) -> int:
     if not keyword:
         parser.error("Please provide a non-empty search keyword.")
 
+    source: str = args.source
+
     # ---- Scrape ----
     try:
-        products = search_tokopedia(keyword, max_pages=args.pages)
+        if source == "all":
+            products = _search_all(keyword, max_pages=args.pages)
+            source_label = "All Sources"
+        else:
+            scraper_instance = get_scraper(source)
+            console.print(
+                f"\n  [dim]━━━ Searching[/] [bold]{scraper_instance.NAME}[/] [dim]…[/]"
+            )
+            products = scraper_instance.search(keyword, max_pages=args.pages)
+            source_label = scraper_instance.NAME
     except KeyboardInterrupt:
-        print("\n  ⏹  Interrupted by user.")
+        console.print("\n  [yellow]⏹ Interrupted by user.[/]")
         return 130
+    except KeyError as exc:
+        console.print(f"  [red]Error: {exc}[/]")
+        return 1
     except Exception as exc:
         logging.error("Fatal error during scraping: %s", exc)
         return 1
 
     # ---- Display ----
-    print_results(keyword, products)
+    print_results(keyword, products, source_label=source_label)
 
     # ---- Optional export ----
     if args.export:
         try:
-            out = export_to_csv(products, args.export)
-            print(f"  📁  Results exported to: {out}\n")
+            if source == "all":
+                exporter = get_scraper(list_sources()[0])
+            else:
+                exporter = get_scraper(source)
+            out = exporter.export_to_csv(products, args.export)
+            console.print(f"  [green]📁 Results exported to:[/] [bold]{out}[/]\n")
         except Exception as exc:
             logging.error("Failed to export CSV: %s", exc)
             return 1
