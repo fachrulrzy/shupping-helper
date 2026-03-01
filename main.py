@@ -307,27 +307,64 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _search_all(keyword: str, max_pages: int) -> list[dict]:
-    """Search all registered sources and return combined, price-sorted results."""
+    """Search all registered sources **in parallel** and return combined results.
+
+    Uses ``ThreadPoolExecutor`` so every source scrapes concurrently.
+    Timing info is printed per-source and overall.
+    """
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     all_products: list[dict] = []
     scrapers = list_scrapers()
 
-    for slug, scraper_cls in scrapers.items():
-        scraper_inst = scraper_cls()
-        console.print(f"  [dim]━━━ Searching[/] [bold]{scraper_inst.NAME}[/] [dim]…[/]")
+    console.print(
+        f"\n  [dim]⚡ Searching [bold]{len(scrapers)}[/bold] sources in parallel …[/]"
+    )
+    overall_start = _time.perf_counter()
+
+    def _run_scraper(slug: str, scraper_cls: type) -> tuple[str, str, list[dict], float]:
+        """Run a single scraper and return (slug, name, products, elapsed)."""
+        inst = scraper_cls()
+        t0 = _time.perf_counter()
         try:
-            products = scraper_inst.search(keyword, max_pages=max_pages)
+            products = inst.search(keyword, max_pages=max_pages)
             for p in products:
-                p["_source"] = scraper_inst.NAME
-            all_products.extend(products)
-            console.print(
-                f"  [dim]━━━[/] [bold]{scraper_inst.NAME}[/] → "
-                f"[green]{len(products)} product(s)[/]"
-            )
+                p["_source"] = inst.NAME
+            elapsed = _time.perf_counter() - t0
+            return slug, inst.NAME, products, elapsed
         except Exception as exc:
-            console.print(
-                f"  [dim]━━━[/] [bold]{scraper_inst.NAME}[/] → "
-                f"[red]failed: {exc}[/]"
-            )
+            elapsed = _time.perf_counter() - t0
+            logging.warning("%s failed: %s", inst.NAME, exc)
+            return slug, inst.NAME, [], elapsed
+
+    # Launch all scrapers concurrently.
+    with ThreadPoolExecutor(max_workers=len(scrapers)) as pool:
+        futures = {
+            pool.submit(_run_scraper, slug, cls): slug
+            for slug, cls in scrapers.items()
+        }
+
+        for future in as_completed(futures):
+            slug, name, products, elapsed = future.result()
+            if products:
+                all_products.extend(products)
+                console.print(
+                    f"  [dim]━━━[/] [bold]{name}[/] → "
+                    f"[green]{len(products)} product(s)[/] "
+                    f"[dim]({elapsed:.1f}s)[/]"
+                )
+            else:
+                console.print(
+                    f"  [dim]━━━[/] [bold]{name}[/] → "
+                    f"[yellow]0 products[/] [dim]({elapsed:.1f}s)[/]"
+                )
+
+    overall = _time.perf_counter() - overall_start
+    console.print(
+        f"  [dim]⚡ Done in [bold]{overall:.1f}s[/bold] "
+        f"(scraped {len(scrapers)} sources in parallel)[/]"
+    )
 
     # Sort by price (cheapest first), zero-price items last.
     all_products.sort(key=lambda p: p["price"] if p["price"] > 0 else float("inf"))
