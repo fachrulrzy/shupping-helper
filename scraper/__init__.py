@@ -9,3 +9,4 @@ so that :func:`scraper.registry.list_sources` returns the full list.
 # Import scraper modules to trigger @register side-effects.
 import scraper.odd  # noqa: F401
 import scraper.seek  # noqa: F401
+import scraper.jdsports  # noqa: F401

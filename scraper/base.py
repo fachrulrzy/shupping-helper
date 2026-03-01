@@ -151,12 +151,17 @@ class BaseScraper(abc.ABC):
     def parse_price(raw: str | int | float | None) -> int:
         """Convert various price representations to a plain integer (IDR).
 
+        Handles both decimal notation (``"2750000.00"``) and Indonesian
+        thousand-separator notation (``"Rp 2.200.000"``).
+
         Examples
         --------
         >>> BaseScraper.parse_price("Rp 1.450.000")
         1450000
         >>> BaseScraper.parse_price("2750000.00")
         2750000
+        >>> BaseScraper.parse_price("Rp 2.200.000")
+        2200000
         >>> BaseScraper.parse_price(880000)
         880000
         """
@@ -164,7 +169,31 @@ class BaseScraper(abc.ABC):
             return 0
         if isinstance(raw, (int, float)):
             return int(raw)
-        cleaned = re.sub(r"[^\d.]", "", str(raw))
+
+        text = str(raw).strip()
+
+        # Strip everything except digits, dots, and commas.
+        cleaned = re.sub(r"[^\d.,]", "", text)
+        if not cleaned:
+            return 0
+
+        # Count dots — if more than one, they are thousand separators (IDR).
+        dot_count = cleaned.count(".")
+        if dot_count > 1:
+            # "2.200.000" → "2200000"
+            cleaned = cleaned.replace(".", "")
+        elif dot_count == 1:
+            # Could be decimal ("2750000.00") or single thousand sep ("800.000").
+            # Heuristic: if last dot has exactly 3 digits after it, it's a
+            # thousand separator; otherwise it's a decimal point.
+            parts = cleaned.split(".")
+            if len(parts[1]) == 3:
+                cleaned = cleaned.replace(".", "")
+            # else keep dot as decimal
+
+        # Commas are always thousand separators (e.g. "1,450,000").
+        cleaned = cleaned.replace(",", "")
+
         if not cleaned:
             return 0
         return int(float(cleaned))
