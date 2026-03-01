@@ -133,18 +133,23 @@ def print_results(
     )
 
     table.add_column("#", style="dim", width=3, justify="right")
-    table.add_column("Product", min_width=30, max_width=50)
+    table.add_column("Product", min_width=35, ratio=3)
     table.add_column("Price", min_width=18, justify="right")
     table.add_column("Source", min_width=16)
     table.add_column("Brand", min_width=10)
     table.add_column("Status", min_width=8, justify="center")
 
     for idx, product in enumerate(products, start=1):
-        # Name with optional ad tag.
+        # Name + link underneath.
         name = _truncate(product["name"], 48)
-        name_text = Text(name)
+        name_text = Text()
+        name_text.append(name, style="bold")
         if product.get("is_ad"):
             name_text.append(" [AD]", style="bold red")
+        url = product.get("url", "")
+        if url:
+            short_url = _truncate(url.replace("https://", "").replace("www.", ""), 55)
+            name_text.append(f"\n{short_url}", style="dim cyan link " + url)
 
         # Price with color coding.
         price_text = _make_price_text(product, cheapest)
